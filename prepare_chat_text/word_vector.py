@@ -159,9 +159,9 @@ def step2():
     t2.join()
 
     # 用填充完PAD的data训练word2vec模型
-    model = train_word2vec(que_data + ans_data, isAppend=APPEND)
+    model = train_word2vec(que_data + ans_data, isAppend=False)
     # model对高频词汇进行了随机采样，这样会筛选掉一部分原本字典中的词，因此需要在这里进行更新
-    final_dict = update_dict(model, isAppend=APPEND)
+    final_dict = update_dict(model, isAppend=False)
     save_data(config.dict_path, '/dictionary.txt', final_dict)
 
     # 保存一下填充网PAD的文本，以便以后使用

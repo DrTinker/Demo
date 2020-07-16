@@ -74,7 +74,7 @@ def make_dataset():
         if (i % size == 0 and i != 0) or (DATA_LIST_SIZE-1-i < DATA_SET_SIZE):
             dataset = zip(q, a1, a2)
             save_data(config.dataset_path, '/dataset{}'.
-                      format(int(i/size) if i != DATA_LIST_SIZE else
+                      format(int(i/size) if  (DATA_LIST_SIZE-i >= DATA_SET_SIZE) else
                              int(i/size)+1),
                       dataset)
             # 记得清空list
