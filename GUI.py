@@ -145,7 +145,7 @@ def main():
 
     def lanuch_server():
         rec = os.system('''
-        D:/Anaconda/envs/DrTinker/python.exe "D:/GitHub_LocalRespsitory/Chatterbot/chatbot_0.1.8/app.py"''')
+        D:/Anaconda/envs/DrTinker/python.exe "d:/Mechine Learing/NLP/chatbot_0.1.8/app.py"''')
         print(rec)
 #####################################准备模型语料################################################
 

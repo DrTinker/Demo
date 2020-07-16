@@ -48,7 +48,7 @@ predit_limit = 0.5
 # Embedding层的word2vec训练超参数
 MAX_FREQUENCE = 50000    # 最高出现频率
 MIN_FREQUENCE = 5   # 最低出现频率
-EMBEDDING_SIZE = 200    # 词向量维度
+EMBEDDING_SIZE = 300    # 词向量维度
 KEEP_WORD = ['你好', '我', '他', '你']   #经过筛选后强制保留的词
 LEN_OF_QUE = 8     # padding后的同一句子长度
 LEN_OF_ANS = 12
@@ -63,8 +63,8 @@ word2vec_path = './model/word2vec'
 word2vec_model = './model/word2vec/word2vec.model'
 
 # 预测时的惩罚因子
-punish_weight = 0.8
-punish_weight_max = 0.4
+punish_weight = 0.5
+punish_weight_max = 0.25
 BEAM_SIZE = 3
 
 # 想在已有模型上进行增量训练
@@ -86,20 +86,17 @@ DATA_SET_SIZE = 100
 # seq2seq的超参数
 ATTENTION = False   # 是否使用Bah Atten
 METHOD = 'general'  # 使用Luong Atten时的score方法
-RNN_UNITS = 512
+RNN_UNITS = 600
 DATA_SET_NUM = 46
 TEACHER_FORCE = False
 CLIPNORM = 1e-07
 LR = 0.001
 DROPOUT = True
-DR = 0.3
+DR = 0.4
 
 # checkpoint保存路径
-model_path = './model/checkpoints_luong'
 encoder_model_path = './model/checkpoints_luong/encoder'
 decoder_model_path = './model/checkpoints_luong/decoder'
-embedding_model = './model/checkpoints_luong/embed.h5'
-project_model = './model/checkpoints_luong/project.h5'
 
 # 新增聊天记录保存位置
 chat_record_path = './corpus/data/record'
