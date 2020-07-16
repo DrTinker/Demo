@@ -20,26 +20,29 @@ class Encoder(tf.keras.Model):
         这里双向LSTM会将fw和bw的输出结果按最后一个维度，即rnn_units拼接
         然后再经过一个单向lstm，最终输出向量维度(batch_size, max_len, rnn_units)
     '''
-    def __init__(self, rnn_units, isBi=True, dropout=False, dropout_rate=0.0):
+    def __init__(self, tokenLib_size, embedding_size, rnn_units,
+                 embed_init, dropout=False, dropout_rate=0.0):
         super(Encoder, self).__init__()
         self.rnn_units = rnn_units
-        self.isBi = isBi
+
+        self.embedding = tf.keras.layers.Embedding(
+            input_dim=tokenLib_size, output_dim=embedding_size,
+            embeddings_initializer=tf.keras.initializers.Constant(embed_init))
+
         # 第一层
         self.fw_lstm1 = tf.keras.layers.LSTM(
             units=rnn_units, return_sequences=True,
             return_state=True)
-        if isBi:
-            self.bw_lstm1 = tf.keras.layers.LSTM(
-                units=rnn_units, return_sequences=True,
-                return_state=True, go_backwards=True)
+        self.bw_lstm1 = tf.keras.layers.LSTM(
+            units=rnn_units, return_sequences=True,
+            return_state=True, go_backwards=True)
         # 第二层
         self.fw_lstm2 = tf.keras.layers.LSTM(
             units=rnn_units, return_sequences=True,
             return_state=True)
-        if isBi:
-            self.bw_lstm2 = tf.keras.layers.LSTM(
-                units=rnn_units, return_sequences=True,
-                return_state=True, go_backwards=True)
+        self.bw_lstm2 = tf.keras.layers.LSTM(
+            units=rnn_units, return_sequences=True,
+            return_state=True, go_backwards=True)
         # 第三层
         self.last_lstm = tf.keras.layers.LSTM(
             units=rnn_units, return_sequences=True,
@@ -49,24 +52,21 @@ class Encoder(tf.keras.Model):
             self.drop2 = tf.keras.layers.Dropout(rate=dropout_rate)
             self.dropout = dropout
 
-    def call(self, embed, states_list, state_truple):
+
+    def call(self, sequence, states_list, state_truple):
+        # 先经过Embedding层形成稠密矩阵
+        embed = self.embedding(sequence)
         # 前向和后向LSTM
         fw_out, _, _ = self.fw_lstm1(embed, initial_state=states_list[0])
-        if self.isBi:
-            bw_out, _, _ = self.bw_lstm1(embed, initial_state=states_list[1])
-            output1 = tf.concat([fw_out, bw_out], axis=-1)
-        else:
-            output1 = fw_out
+        bw_out, _, _ = self.bw_lstm1(embed, initial_state=states_list[1])
+        output1 = tf.concat([fw_out, bw_out], axis=-1)
         if self.dropout:
             output1 = self.drop1(output1)
         # 第二层
         fw_out, _, _ = self.fw_lstm2(output1, initial_state=states_list[0])
-        if self.isBi:
-            bw_out, _, _ = self.bw_lstm2(output1, initial_state=states_list[1])
-            # 按照rnn_units维度拼接output
-            output1 = tf.concat([fw_out, bw_out], axis=-1)
-        else:
-            output1 = fw_out
+        bw_out, _, _ = self.bw_lstm2(output1, initial_state=states_list[1])
+        # 按照rnn_units维度拼接output
+        output1 = tf.concat([fw_out, bw_out], axis=-1)
         if self.dropout:
             output1 = self.drop2(output1)
 

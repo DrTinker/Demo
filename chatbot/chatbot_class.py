@@ -1,13 +1,14 @@
 import os
 import sys
 import tensorflow as tf
+from gensim.models import Word2Vec
 sys.path.append(os.getcwd())
 import config
 
-from lib import spiltCN_by_word, splitCN_by_char
+from lib import load_dict, spiltCN_by_word, splitCN_by_char
 from lib import normalize_string, regular
 
-from chatbot import instantiate, load_weight
+from chatbot import instantiate, load_weight, make_embed_init
 import math as m
 
 BEAM_SIZE = config.BEAM_SIZE
@@ -17,13 +18,13 @@ LAMDA = 0.0001  # 防止出现0
 class Chatbot():
     def __init__(self, num):
         super().__init__()
+        self.dictionary = load_dict()
         self.stopwords = ' '
-        self.embedding, self.encoder, self.decoder, self.project = instantiate()
+        self.model = Word2Vec.load(config.word2vec_model)
+        self.matrix = make_embed_init(self.model, self.dictionary)
+        self.encoder, self.decoder = instantiate(self.dictionary, self.matrix)
 
-        # 训练的时候不加载embed和project，因为如果增量训练时可能会出现字典长度不一致的情况
         load_weight(num, self.encoder, self.decoder)
-        self.embedding.load_weights(config.embedding_model)
-        self.project.load_weights(config.project_model)
 
     def get_key(self, dict, value):
         '''
@@ -86,18 +87,17 @@ class Chatbot():
         vec = []
         for word in splited:
             try:
-                vec.append(self.embedding.dictionary[word])
+                vec.append(self.dictionary[word])
             except KeyError:
-                vec.append(self.embedding.dictionary['<UNK>'])
+                vec.append(self.dictionary['<UNK>'])
                 continue
 
         # 将向量输入模型
-        en_embed = self.embedding(tf.constant([vec]))
         en_initial_list = self.encoder.init_state_list(1)
         en_initial_tuple = self.encoder.init_state_tuple(1)
-        en_outputs = self.encoder(en_embed, en_initial_list, en_initial_tuple)
+        en_outputs = self.encoder(tf.constant([vec]), en_initial_list, en_initial_tuple)
 
-        de_input = tf.constant([[self.embedding.dictionary['<SOS>']]])
+        de_input = tf.constant([[self.dictionary['<SOS>']]])
         # print('input：{}'.format(de_input))
         de_state_h, de_state_c = en_outputs[1]
 
@@ -111,10 +111,8 @@ class Chatbot():
             punish_weight_max = config.punish_weight_max
             # 循环获取decoder输出，指导<EOS>，或者句子过长
             while True:
-                de_embed = self.embedding(de_input)
-                att_vec, de_state_h, de_state_c = self.decoder(
-                    de_embed, (de_state_h, de_state_c), en_outputs[0])
-                de_output = self.project(att_vec)
+                de_output, de_state_h, de_state_c = self.decoder(
+                    de_input, (de_state_h, de_state_c), en_outputs[0])
                 # 获取预测值 --> 使用gready search转为id --> 通过字典获取词 --> 将词转为200维词向量
                 # --> 扩展维度以适应解码器输入
                 # 给上一次出现的项乘以惩罚因子，连续出现则惩罚增加
@@ -125,7 +123,7 @@ class Chatbot():
 
                 wid = tf.argmax(de_output, -1).numpy()
                 de_input = tf.constant([wid])
-                word = self.get_key(self.embedding.dictionary, wid[0])
+                word = self.get_key(self.dictionary, wid[0])
                 if word == '<UNK>':
                     word = ''
                 # 更新惩罚项
@@ -141,12 +139,9 @@ class Chatbot():
 
         else:
             # 获取第一次
-            de_embed = self.embedding(de_input)
-            att_vec, de_state_h, de_state_c = self.decoder(
-                    de_embed, (de_state_h, de_state_c), en_outputs[0])
-            de_output = self.project(att_vec)
+            de_output, de_state_h, de_state_c = self.decoder(
+                    de_input, (de_state_h, de_state_c), en_outputs[0])
             res = self.beam_search_decoder(de_output.numpy(), BEAM_SIZE)
-
             outputs = []
             out_words = []
             # print('input：{}'.format(res))
@@ -161,19 +156,17 @@ class Chatbot():
                 cur_id = res[-1][0][-1]
                 # print(res)
                 # print(out_words)
-                if cur_id == self.embedding.dictionary['<EOS>'] or len(out_words) >= 20:
+                if cur_id == self.dictionary['<EOS>'] or len(out_words) >= 20:
                     break
                 else:
-                    out_words.append(self.get_key(self.embedding.dictionary, cur_id))
+                    out_words.append(self.get_key(self.dictionary, cur_id))
 
                 # 将每个beam的预测值都带入decoder计算，得到beam_size平方个结果
                 # 然后通过score筛选出最大的前beam_size个
                 for i in range(BEAM_SIZE):
                     de_input = tf.expand_dims([res[i][0][-1]], axis=0)
-                    de_embed = self.embedding(de_input)
-                    att_vec, de_state_h, de_state_c = self.decoder(
-                        de_embed, (pre_de_state_h, pre_de_state_c), en_outputs[0])
-                    de_output = self.project(att_vec)
+                    de_output, de_state_h, de_state_c = self.decoder(
+                        de_input, (pre_de_state_h, pre_de_state_c), en_outputs[0])
                     outputs.append(de_output)
                 for j in range(len(outputs)-1):
                     de_output = tf.concat([outputs[j], outputs[j+1]], axis=0)
@@ -185,7 +178,7 @@ class Chatbot():
 
 def test():
     print('初始化chatbot')
-    chatbot = Chatbot(50)
+    chatbot = Chatbot(150)
 
     print('初始化完成')
     print('输入exit以结束对话')

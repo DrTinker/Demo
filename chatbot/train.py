@@ -1,17 +1,18 @@
-import pickle
-import numpy as np
-import tensorflow as tf
-import matplotlib.pyplot as plt
-
 import sys
 import os
 sys.path.append(os.getcwd())
-import config
-from lib import shutDown
-from lib import ProgressBar
-from chatbot import Embedding
-from chatbot import Decoder, Projection
+
 from chatbot import Encoder
+from chatbot import Decoder
+from gensim.models import Word2Vec
+from lib import load_dict
+from lib import ProgressBar
+from lib import shutDown
+import matplotlib.pyplot as plt
+import tensorflow as tf
+import numpy as np
+import pickle
+import config
 
 
 BATCH_SIZE = config.BATCH_SIZE
@@ -31,34 +32,30 @@ DR = config.DR
 ori_dict = config.ori_dict
 
 
-def instantiate():
+def instantiate(dictionary, embedding_matrix):
     print('模型实例化')
-    # 词嵌入层实例化
-    initial_embed = tf.random.uniform([100, 1],
-                                      minval=0, maxval=100,
-                                      dtype=tf.dtypes.int32)
-    embedding = Embedding(EMBEDDING_SIZE)
-    out = embedding(initial_embed)
     # 编码器实例化
-    encoder = Encoder(RNN_SIZE,
+    vocab_size = len(dictionary) + 1
+    encoder = Encoder(vocab_size, EMBEDDING_SIZE,
+                      RNN_SIZE, embedding_matrix,
                       dropout=DROPOUT,
                       dropout_rate=DR)
-    # 解码器
-    decoder = Decoder(RNN_SIZE,
+    # 解码器实例化
+    decoder = Decoder(vocab_size, EMBEDDING_SIZE,
+                      RNN_SIZE, embedding_matrix,
                       method=METHOD, Bah_atten=ATTENTION,
                       dropout=DROPOUT,
                       dropout_rate=DR)
-    # 投影层
-    projection = Projection(embedding.tokenLib_size)
-    initial_tuple = encoder.init_state_tuple(100)
-    initial_list = encoder.init_state_list(100)
+    initial_tuple = encoder.init_state_tuple(BATCH_SIZE)
+    initial_list = encoder.init_state_list(BATCH_SIZE)
+    initial_embed = tf.random.uniform([BATCH_SIZE, 1],
+                                      minval=0, maxval=100,
+                                      dtype=tf.dtypes.int32)
+    encoder_outputs = encoder(initial_embed, initial_list, initial_tuple)
 
-    encoder_outputs = encoder(out, initial_list, initial_tuple)
+    decoder(initial_embed, encoder_outputs[1], encoder_outputs[0])
 
-    decoder_outputs = decoder(out, encoder_outputs[1], encoder_outputs[0])
-    projection(decoder_outputs[0])
-
-    return embedding, encoder, decoder, projection
+    return encoder, decoder
 
 
 # 损失函数
@@ -78,17 +75,28 @@ def loss_func(targets, logits):
     return loss
 
 
+def acc_func(targets, logits):
+    acc = 0
+    tag = 0
+    for j in range(BATCH_SIZE):
+        y = tf.cast(targets[j], dtype=tf.int32)
+        if y == ori_dict['<PAD>'] or y == ori_dict['<UNK>']:
+            tag += 1
+            continue
+        if tf.equal(tf.cast(logits[j], dtype=tf.int32), y):
+            acc += 1
+    return acc, tag
+
+
 def train_step(source_seq, target_seq_in, target_seq_out,
                en_initial_list, en_initial_tuple,
-               embedding, encoder, decoder, projection,
+               encoder, decoder,
                teacher_force=False):
     loss = 0
-    acc = 0
+    acc1 = 0
+    tag1 = 0
     with tf.GradientTape() as tape:
-        # 先embedding
-        en_embed = embedding(source_seq)
-        # 编码器
-        en_outputs = encoder(en_embed, en_initial_list,
+        en_outputs = encoder(source_seq, en_initial_list,
                              en_initial_tuple)
         en_states = en_outputs[1]
         (de_state_h, de_state_c) = en_states
@@ -96,49 +104,41 @@ def train_step(source_seq, target_seq_in, target_seq_out,
         # 不采用teacher_forcing的话需要给定第一个<SOS>
         if not teacher_force:
             decoder_in = tf.constant(value=1, shape=(BATCH_SIZE, 1))
-        # 解码器按字拆分开来
+        # 按字拆分开来，使用Teacher Force
         for i in range(target_seq_out.shape[1]):
             if teacher_force:
                 # 矩阵维度对齐
                 decoder_in = tf.expand_dims(target_seq_in[:, i], 1)
-                de_embed = embedding(decoder_in)
-                att_vec, de_state_h, de_state_c = decoder(
-                    de_embed, (de_state_h, de_state_c), en_outputs[0])
-                # 经过投射层才是输出
-                logit = projection(att_vec)
+                logit, de_state_h, de_state_c = decoder(
+                    decoder_in, (de_state_h, de_state_c), en_outputs[0])
                 wid = tf.argmax(logit, -1)
             else:
-                de_embed = embedding(decoder_in)
-                att_vec, de_state_h, de_state_c = decoder(
-                    de_embed, (de_state_h, de_state_c), en_outputs[0])
-                # 经过投射层才是输出
-                logit = projection(att_vec)
+                logit, de_state_h, de_state_c = decoder(
+                    decoder_in, (de_state_h, de_state_c), en_outputs[0])
                 # 更新输入，用上一个decoder单元的输出代替输入
                 wid = tf.argmax(logit, -1)
                 decoder_in = tf.expand_dims(wid, axis=1)
 
-            for j in range(BATCH_SIZE):
-                if tf.equal(tf.cast(wid[j], dtype=tf.int32),
-                            tf.cast(target_seq_out[:, i][j], dtype=tf.int32)):
-                    acc += 1
+            acc, tag = acc_func(target_seq_out[:, i], wid)
+            acc1 += acc
+            tag1 += tag
             # print('logit{}'.format(logit.shape))
             # 整个batch学完后loss
             loss += loss_func(target_seq_out[:, i], logit)
 
-    variables = (encoder.trainable_variables + decoder.trainable_variables +
-                 embedding.trainable_variables + projection.trainable_variables)
+    variables = encoder.trainable_variables + decoder.trainable_variables
     gradients = tape.gradient(loss, variables)
     # 优化器——梯度下降
     optimizer = tf.keras.optimizers.Adam(learning_rate=LR, clipnorm=CLIPNORM)
     optimizer.apply_gradients(zip(gradients, variables))
 
     loss = loss / target_seq_out.shape[1]
-    acc = acc / (target_seq_out.shape[1] * BATCH_SIZE)
+    acc = acc1 / (target_seq_out.shape[1] * BATCH_SIZE - tag1)
 
     return loss, acc
 
 
-def train(embedding, encoder, decoder, projection, dataset_list):
+def train(encoder, decoder, dataset_list):
     # 训练
     en_initial_tuple = encoder.init_state_tuple(BATCH_SIZE)
     en_initial_list = encoder.init_state_list(BATCH_SIZE)
@@ -152,15 +152,31 @@ def train(embedding, encoder, decoder, projection, dataset_list):
                                target_seq_out,
                                en_initial_list,
                                en_initial_tuple,
-                               embedding, encoder,
-                               decoder, projection,
+                               encoder, decoder,
                                teacher_force=TEACHER_FORCE)
 
-        if (acc >= 0.8):
-            print('acc高于0.8，提前终止！')
-            return
+        #if (acc >= 0.95):
+        #    print('acc高于0.95，提前终止！')
+
+        #    encoder.save_weights(
+        #        config.encoder_model_path + '/encoder_final.h5')
+        #    decoder.save_weights(
+        #        config.decoder_model_path + '/decoder_final.h5')
+
+        #    exit(0)
 
         return loss, acc
+
+
+def make_embed_init(model, dictionary):
+    embedding_matrix = np.zeros((len(dictionary) + 1, EMBEDDING_SIZE))
+    for word, i in dictionary.items():
+        embedding_vector = model.wv[word]
+        if embedding_vector is not None:
+            # words not found in embedding index will be all-zeros.
+            embedding_matrix[i] = embedding_vector
+
+    return embedding_matrix
 
 
 # 绘制学习曲线
@@ -203,7 +219,11 @@ def load_weight(num, encoder, decoder):
 
 def step3():
     print('正在初始化')
-    embedding, encoder, decoder, projection = instantiate()
+    dictionary = load_dict()
+    # train(encoder, decoder, teacher_force, dataset_list[0:3])
+    model = Word2Vec.load(config.word2vec_model)
+    embedding_matrix = make_embed_init(model, dictionary)
+    encoder, decoder = instantiate(dictionary, embedding_matrix)
     print('初始化完成')
 
     print('请输入训练epoch数和起始节点')
@@ -241,18 +261,15 @@ def step3():
     if not os.path.exists(config.decoder_model_path):
         os.makedirs(config.decoder_model_path)
 
-    print(embedding.summary())
     print(encoder.summary())
     print(decoder.summary())
-    print(projection.summary())
 
     loss_per_epoch = []
     acc_per_epoch = []
     # 一个EPOCH学所有的dataset
     # 相当于部所有数据分批读入，减小内存压力
     path = config.dataset_path
-    DATA_SET_NUM = len([lists for lists in os.listdir(
-        path) if os.path.isfile(os.path.join(path, lists))])
+    DATA_SET_NUM = len([lists for lists in os.listdir(path) if os.path.isfile(os.path.join(path, lists))])
     for e in range(NUM_EPOCHS):
         print('Epoch {}'.format(e+1))
 
@@ -265,8 +282,7 @@ def step3():
                       mode='rb') as file:
                 dataset_list = pickle.load(file)
             # print('共读取{}个batch'.format(100))
-            loss, acc = train(embedding, encoder,
-                              decoder, projection, dataset_list)
+            loss, acc = train(encoder, decoder, dataset_list)
             pbar.update(num)
 
         loss_per_epoch.append(loss)
@@ -276,15 +292,14 @@ def step3():
 
         if e % 50 == 0 or e == NUM_EPOCHS-1:
             # 保存模型
-            embedding.save_weights(
-                config.model_path + '/embed.h5')
             encoder.save_weights(
                 config.encoder_model_path + '/encoder_{}.h5'.format(e + node))
             decoder.save_weights(
                 config.decoder_model_path + '/decoder_{}.h5'.format(e + node))
-            projection.save_weights(
-                config.model_path + '/project.h5')
-
+    encoder.save_weights(
+        config.encoder_model_path + '/encoder_final.h5')
+    decoder.save_weights(
+        config.decoder_model_path + '/decoder_final.h5')
     # 每个epoch中所有数据集的表现
     draw_graph(loss_per_epoch, e+node, mode='loss')
     draw_graph(acc_per_epoch, e+node, mode='acc')
@@ -301,9 +316,11 @@ def train_for_ui(epochs, start, isTF=False, isShut=False, isPint=False):
         isPint：是否绘制acc和loss图像
     '''
     print('正在初始化')
-    embedding, encoder, decoder, projection = instantiate()
+    dictionary = load_dict()
+    model = Word2Vec.load(config.word2vec_model)
+    embedding_matrix = make_embed_init(model, dictionary)
+    encoder, decoder = instantiate(dictionary, embedding_matrix)
     print('初始化完成')
-
     # 判断训练轮数是否为有效值
     if epochs <= 0:
         print('训练次数应当为正整数')
@@ -321,18 +338,15 @@ def train_for_ui(epochs, start, isTF=False, isShut=False, isPint=False):
     if not os.path.exists(config.decoder_model_path):
         os.makedirs(config.decoder_model_path)
 
-    print(embedding.summary())
     print(encoder.summary())
     print(decoder.summary())
-    print(projection.summary())
 
     loss_per_epoch = []
     acc_per_epoch = []
     # 一个EPOCH学所有的dataset
     # 相当于部所有数据分批读入，减小内存压力
     path = config.dataset_path
-    DATA_SET_NUM = len([lists for lists in os.listdir(
-        path) if os.path.isfile(os.path.join(path, lists))])
+    DATA_SET_NUM = len([lists for lists in os.listdir(path) if os.path.isfile(os.path.join(path, lists))])
     for e in range(epochs):
         print('Epoch {}'.format(e+1))
 
@@ -344,8 +358,7 @@ def train_for_ui(epochs, start, isTF=False, isShut=False, isPint=False):
                       mode='rb') as file:
                 dataset_list = pickle.load(file)
             # print('共读取{}个batch'.format(100))
-            loss, acc = train(embedding, encoder,
-                              decoder, projection, dataset_list)
+            loss, acc = train(encoder, decoder, dataset_list)
             pbar.update(num)
 
         loss_per_epoch.append(loss)
@@ -355,15 +368,16 @@ def train_for_ui(epochs, start, isTF=False, isShut=False, isPint=False):
 
         if e % 50 == 0 or e == epochs-1:
             # 保存模型
-            embedding.save_weights(
-                config.model_path + '/embed.h5')
             encoder.save_weights(
                 config.encoder_model_path + '/encoder_{}.h5'.format(e + start))
             decoder.save_weights(
                 config.decoder_model_path + '/decoder_{}.h5'.format(e + start))
-            projection.save_weights(
-                config.model_path + '/project.h5')
 
+    # 不管啥情况，最后退出的时候都保存一下
+    encoder.save_weights(
+        config.encoder_model_path + '/encoder_final.h5')
+    decoder.save_weights(
+        config.decoder_model_path + '/decoder_final.h5')
     # 每个epoch中所有数据集的表现
     if isPint:
         draw_graph(loss_per_epoch, e+start, mode='loss')
